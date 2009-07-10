@@ -1,0 +1,1 @@
+This project has a dependency on clj-apache-http. A recent build is in the lib/ directory; everything you need to use this code is in the checkout.
