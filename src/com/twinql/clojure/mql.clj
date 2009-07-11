@@ -131,22 +131,25 @@
                 domain-strict
                 escape      ; 'html'
 
-                http-options]} args]
+                http-options]} (apply hash-map args)
+        
+        query (non-nil-values
+                {"query" query
+                 "format" (or format "json")
+                 "prefixed" prefixed
+                 "limit" limit
+                 "start" start
+                 "type" type
+                 "type_strict" type-strict
+                 "domain" domain
+                 "domain_strict" domain-strict
+                 "escape" escape})]
+    
     (let [[code response body]
           (http/get *mql-search*
                     :headers (:headers http-options)
                     :parameters (:parameters http-options)
-                    :query (non-nil-values
-                             {"query" query
-                              "format" (or format "json")
-                              "prefixed" prefixed
-                              "limit" limit
-                              "start" start
-                              "type" type
-                              "type_strict" type-strict
-                              "domain" domain
-                              "domain_strict" domain-strict
-                              "escape" escape})
+                    :query query
                     :as :json)]
 
       (if (and (>= code 200)
