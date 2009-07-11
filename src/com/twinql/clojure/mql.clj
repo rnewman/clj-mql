@@ -162,3 +162,27 @@
           body)
         (throw (new Exception
                     (str "Bad response: " code " " response)))))))
+
+(comment
+  (doseq [m (mql/mql-search "Los Gatos")]
+    ;; Everything is a topic...
+    (let [topic (first
+                  (filter
+                     #(not (= "Topic" %))
+                     (map :name (:type m))))]
+      (println 
+        (str (:id m) (if topic (str ": a " topic) "")
+             " named “" (or (:name m)
+                            (:alias m)) "”"))))
+  
+  (doseq [m (mql/mql-search "Los Gatos" :type "/location/citytown")]
+    ;; Everything is a topic.. filter them out..
+    (let [topic (first
+                  (filter
+                     #(not (= "Topic" %))
+                     (map :name (:type m))))]
+      (println 
+        (str (:id m) (if topic (str ": a " topic) "")
+             " named “" (or (:name m)
+                            (:alias m)) "”"))))
+  )
