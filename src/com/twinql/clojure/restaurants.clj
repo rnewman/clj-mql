@@ -1,19 +1,22 @@
 (ns com.twinql.clojure.restaurants
   (:require [com.twinql.clojure.mql :as mql]))
 
+(defn restaurants-in-query [city-id]
+  {"/business/business_location/address" [{"citytown" {"name" nil
+                                                       "id" city-id}
+                                           "/location/mailing_address/street_address" nil}]
+   "id" nil
+   "name" nil
+   "type" "/dining/restaurant"})
+
 (defn restaurants-in
   "Returns an array of dictionaries. You can destructure these with let."
   ([city-id]
    (restaurants-in city-id false))
   ([city-id debug]
-  (mql/run-mql 
-    [{"/business/business_location/address" [{"citytown" {"name" nil
-                                                         "id" city-id}
-                                             "/location/mailing_address/street_address" nil}]
-      "id" nil
-      "name" nil
-      "type" "/dining/restaurant"}]
-    debug)))
+   (mql/mql-read 
+     (restaurants-in-query city-id)
+     debug)))
      
 (defn print-restaurants-in
   "Print something like
