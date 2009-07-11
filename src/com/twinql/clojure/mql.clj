@@ -7,7 +7,14 @@
     [org.danlarkin.json :as json]))
 
 (def *mql-version* (new URI "http://api.freebase.com/api/version"))
+(def *mql-status* (new URI "http://api.freebase.com/api/status"))
 (def *mql-read* (new URI "http://api.freebase.com/api/service/mqlread"))
+(def *mql-search* (new URI "http://api.freebase.com/api/service/search"))
+
+(defn- non-nil-values
+  "Return the map with only those keys that map to non-nil values."
+  [m]
+  (into {} (filter (fn [[k v]] ((complement nil?) v)) m)))
 
 (defn- process-multiple-query-results [res names]
   (when res
@@ -26,6 +33,10 @@
                   (str "Non-OK status from MQL query: "
                        (:status res)))))))
 
+(defn- envelope [q]
+  {"query" q
+   "escape" false})
+
 (defmacro content
   "Return only HTTP content."
   [form]
@@ -38,10 +49,6 @@
 
 (defmethod http/entity-as :json [entity as]
   (json/decode-from-reader (http/entity-as entity :reader)))
-
-(defn envelope [q]
-  {"query" q
-   "escape" false})
 
 ;; An infinite sequence of query names.
 (def query-names
@@ -69,8 +76,8 @@
      (debug-print debug? q "Query parameters:")
      (let [[code response body]
            (http/get *mql-read*
-                     (:headers http-options)
-                     (:parameters http-options)
+                     :headers (:headers http-options)
+                     :parameters (:parameters http-options)
                      :query q 
                      :as :json)]
 
@@ -90,8 +97,65 @@
   
   ([mql]
    (mql-read mql {} false)))
-
+  
 (defn mql-version
   "Returns a map. Useful keys are :graph (graphd version), :me, :cdb, :relevance."
   []
   (content (http/get *mql-version* :as :json)))
+
+(defn mql-status
+  []
+  (content (http/get *mql-status* :as :json)))
+
+(defn mql-search
+  "Perform a MQL search operation.
+  Arguments are query (a string), then any of the following keys:
+  :format
+  :prefixed
+  :limit
+  :start
+  :type
+  :type-strict
+  :domain
+  :domain-strict
+  :escape
+  :http-options, a dictionary treated as the arguments to http/get."
+  [query & args]
+  (let [{:keys [format      ; json, id, guid
+                prefixed    ; boolean
+                limit       ; positive integer, 20 by default
+                start       ; default 0
+                type        ; string, MQL ID
+                type-strict ; string 'any'
+                domain
+                domain-strict
+                escape      ; 'html'
+
+                http-options]} args]
+    (let [[code response body]
+          (http/get *mql-search*
+                    :headers (:headers http-options)
+                    :parameters (:parameters http-options)
+                    :query (non-nil-values
+                             {"query" query
+                              "format" (or format "json")
+                              "prefixed" prefixed
+                              "limit" limit
+                              "start" start
+                              "type" type
+                              "type_strict" type-strict
+                              "domain" domain
+                              "domain_strict" domain-strict
+                              "escape" escape})
+                    :as :json)]
+
+      (if (and (>= code 200)
+               (< code 300))
+
+        (if (or (nil? format)
+                (= format :json)
+                (= format "json"))
+          (process-query-result body)
+          body)
+        (throw (new Exception
+                    (str "Bad response: " code " " response)))))))
