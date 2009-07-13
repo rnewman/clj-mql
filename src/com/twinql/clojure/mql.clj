@@ -10,6 +10,7 @@
 (def *mql-status* (new URI "http://api.freebase.com/api/status"))
 (def *mql-read* (new URI "http://api.freebase.com/api/service/mqlread"))
 (def *mql-search* (new URI "http://api.freebase.com/api/service/search"))
+(def *mql-reconcile* (new URI "http://data.labs.freebase.com/recon/query"))
 
 (defn- non-nil-values
   "Return the map with only those keys that map to non-nil values."
@@ -107,6 +108,38 @@
   []
   (content (http/get *mql-status* :as :json)))
 
+(defn only-matching
+  "Filter MQL reconciliation API results to only include matching results."
+  [results]
+  (filter :match results))
+  
+(defn mql-reconcile
+  [query & args]
+  (let [{:keys [limit
+                start
+                jsonp
+                http-options]} (apply hash-map args)
+        
+        query (non-nil-values
+                {"q" (json/encode-to-str query)
+                 "limit" limit
+                 "start" start
+                 "jsonp" jsonp})]
+    
+    (let [[code response body]
+          (http/get *mql-reconcile*
+                    :headers (:headers http-options)
+                    :parameters (:parameters http-options)
+                    :query query
+                    :as :json)]
+
+      (if (and (>= code 200)
+               (< code 300))
+
+        body
+        (throw (new Exception
+                    (str "Bad response: " code " " response)))))))
+  
 (defn mql-search
   "Perform a MQL search operation.
   Arguments are query (a string), then any of the following keys:
@@ -185,4 +218,23 @@
         (str (:id m) (if topic (str ": a " topic) "")
              " named “" (or (:name m)
                             (:alias m)) "”"))))
+  
+ 
+  (first
+    (mql/only-matching
+      (mql/mql-reconcile 
+       {
+            "/type/object/name" "Blade Runner",
+            "/type/object/type" "/film/film",
+            "/film/film/starring/actor" ["Harrison Ford", "Rutger Hauer"],
+            "/film/film/starring/character" ["Rick Deckard", "Roy Batty"],
+            "/film/film/director" 
+            {
+                "name" "Ridley Scott",
+                "id" "/guid/9202a8c04000641f8000000000032ded"
+            },
+            "/film/film/release_date_s" "1981"
+        })))
+  
+  
   )
