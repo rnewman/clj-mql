@@ -16,19 +16,19 @@
   [m]
   (into {} (filter (fn [[k v]] ((complement nil?) v)) m)))
 
+(defn- process-query-result [res]
+  (when res
+    (if (= "/api/status/ok" (:code res))
+      (:result res)
+      (throw (new Exception
+                  (str "Non-OK status from MQL query: "
+                       (:status res)))))))
+
 (defn- process-multiple-query-results [res names]
   (when res
     (if (= "/api/status/ok" (:code res))
       (map process-query-result
            (vals (select-keys res (map keyword names))))
-      (throw (new Exception
-                  (str "Non-OK status from MQL query: "
-                       (:status res)))))))
-
-(defn- process-query-result [res]
-  (when res
-    (if (= "/api/status/ok" (:code res))
-      (:result res)
       (throw (new Exception
                   (str "Non-OK status from MQL query: "
                        (:status res)))))))
