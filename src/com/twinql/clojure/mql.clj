@@ -71,7 +71,7 @@
   {"query" q
    "escape" false})
 
-(defn- ok? [res]
+(defn ok? [res]
   (= "/api/status/ok" (:code res)))
 
 (defn- check?
