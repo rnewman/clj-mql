@@ -1,60 +1,195 @@
 (ns com.twinql.clojure.mql
   (:import 
-    (java.lang Exception)
-    (java.net URI))
+     (java.lang Exception)
+     (java.net URI)
+     (org.apache.http Header)
+     (org.apache.http.client CookieStore)
+     (org.apache.http.impl.client AbstractHttpClient))
   (:require 
-    [com.twinql.clojure.http :as http]
-    [org.danlarkin.json :as json]))
+     [com.twinql.clojure.http :as http]
+     [org.danlarkin.json :as json]))
 
-(def *mql-version* (new URI "http://api.freebase.com/api/version"))
-(def *mql-status* (new URI "http://api.freebase.com/api/status"))
-(def *mql-read* (new URI "http://api.freebase.com/api/service/mqlread"))
-(def *mql-search* (new URI "http://api.freebase.com/api/service/search"))
+;;;
+;;; API URIs.
+;;; If you need to, you can rebind these around your calls to use different locations.
+;;; By default, SSL is only used for authenticated operations.
+;;; 
+
+(def *mql-login*     (new URI "https://api.freebase.com/api/account/login"))
+(def *mql-logged-in* (new URI "https://api.freebase.com/api/account/loggedin"))
+(def *mql-write*     (new URI "https://api.freebase.com/api/service/mqlwrite"))
+(def *mql-version*   (new URI "http://api.freebase.com/api/version"))
+(def *mql-status*    (new URI "http://api.freebase.com/api/status"))
+(def *mql-read*      (new URI "http://api.freebase.com/api/service/mqlread"))
+(def *mql-search*    (new URI "http://api.freebase.com/api/service/search"))
 (def *mql-reconcile* (new URI "http://data.labs.freebase.com/recon/query"))
+
+(def *s-mql-login*     (new URI "https://www.sandbox-freebase.com/api/account/login"))
+(def *s-mql-logged-in* (new URI "https://www.sandbox-freebase.com/api/account/loggedin"))
+(def *s-mql-write*     (new URI "https://www.sandbox-freebase.com/api/service/mqlwrite"))
+(def *s-mql-version*   (new URI "http://www.sandbox-freebase.com/api/version"))
+(def *s-mql-status*    (new URI "http://www.sandbox-freebase.com/api/status"))
+(def *s-mql-read*      (new URI "http://www.sandbox-freebase.com/api/service/mqlread"))
+(def *s-mql-search*    (new URI "http://www.sandbox-freebase.com/api/service/search"))
+(def *s-mql-reconcile* (new URI "http://data.labs.freebase.com/recon/query"))
+
+(defmacro with-sandbox
+  "Rebinds the API locations to point to the Sandbox."
+  [& body]
+  `(binding [*mql-version*   *s-mql-version*
+             *mql-login*     *s-mql-login*  
+             *mql-logged-in* *s-mql-logged-in*
+             *mql-status*    *s-mql-status* 
+             *mql-read*      *s-mql-read*   
+             *mql-write*     *s-mql-write*  
+             *mql-search*    *s-mql-search* 
+             *mql-reconcile* *s-mql-reconcile*]
+     ~@body))
+
+;;; This is bound by with-login.
+(def *cookie-store* nil)
+
+;;; It's very convenient to always receive bodies as parsed JSON.
+
+(defmethod http/entity-as :json [entity as]
+  (json/decode-from-reader (http/entity-as entity :reader)))
+
+;;;
+;;; Generic utilities.
+;;; 
 
 (defn- non-nil-values
   "Return the map with only those keys that map to non-nil values."
   [m]
   (into {} (filter (fn [[k v]] ((complement nil?) v)) m)))
 
-(defn- process-query-result [res]
-  (when res
-    (if (= "/api/status/ok" (:code res))
-      (:result res)
-      (throw (new Exception
-                  (str "Non-OK status from MQL query: "
-                       (:status res)))))))
-
-(defn- process-multiple-query-results [res names]
-  (when res
-    (if (= "/api/status/ok" (:code res))
-      (map process-query-result
-           (vals (select-keys res (map keyword names))))
-      (throw (new Exception
-                  (str "Non-OK status from MQL query: "
-                       (:status res)))))))
+;;;
+;;; Utility functions for request and response manipulation.
+;;; 
 
 (defn- envelope [q]
   {"query" q
    "escape" false})
 
-(defmacro content
-  "Return only HTTP content."
-  [form]
-  `(~form 2))
+(defn- ok? [res]
+  (= "/api/status/ok" (:code res)))
 
-(defmacro debug-print [debug? value & msg]
-  `(when ~debug?
-     (println ~@msg)
-     (prn ~value)))
+(defn- check?
+  "Checks both an HTTP status code and a JSON body."
+  [code content]
+  (and (and (>= code 200)
+            (< code 300))
+       (ok? content)))
 
-(defmethod http/entity-as :json [entity as]
-  (json/decode-from-reader (http/entity-as entity :reader)))
+(defn- error->exception [res]
+  (throw (new Exception
+              (str "Non-OK status from MQL query: "
+                   (:code res) " -- " (seq (map :message (:messages res)))))))
+
+;; Extract the result from the body if the request was successful.
+;; Otherwise, throw an exception.
+(defn- process-query-result [res]
+  (when res
+    (if (ok? res)
+      (:result res)
+      (error->exception res))))
+
+;; Handle a collection of results, as returned by a 'queries' request.
+(defn- process-multiple-query-results [res names]
+  (when res
+    (if (ok? res)
+      ;; We want to preserve order, so we don't just use
+      ;; select-keys.
+      (map (comp process-query-result res keyword) names)
+      (error->exception res))))
+
+;;;
+;;; Query manipulation.
+;;; 
 
 ;; An infinite sequence of query names.
 (def query-names
   (map (fn [i] (str "q" i)) (iterate inc 1)))
 
+(defn- mql->query
+  "Read and write allow for one or many queries as input. This function
+  takes an arbitrary collection parameter and returns a map (with JSON-encoded
+  values), whether it represents many or one, and a sequence of names."
+  [mql]
+  (let [many? (sequential? mql)
+        names (when many?
+                (take (count mql) query-names))]
+    [(if many?
+             {"queries"
+              (json/encode-to-str
+                (zipmap names
+                        (map (comp envelope vector) mql)))}
+             {"query"
+              (json/encode-to-str
+                (envelope [mql]))})
+     many?
+     names]))
+
+;;; 
+;;; HTTP.
+;;; 
+
+(defmacro with-http-bindings
+  "Binds the keys from the result of the HTTP request, executing forms."
+  [keys http-form & forms]
+  `(let [{:keys ~keys} ~http-form]
+     ~@forms))
+  
+(defmacro with-http-bindings-exception
+  "Binds the keys from the result of the HTTP request, executing forms.
+  If the code is not success, throw an exception."
+  [keys http-form & forms]
+  `(with-http-bindings ~keys ~http-form
+     (if (and (>= ~'code 200)
+              (< ~'code 300))
+       (do
+         ~@forms)
+       (throw (new Exception (str "HTTP failure: " ~'code))))))
+
+;;;
+;;; MQL operations.
+;;; 
+
+(defn mql-login
+  "Returns the login response and on success, false on failure.
+  Also returns the cookie store from the client."
+  [user pass]
+  (with-http-bindings
+    [code content #^AbstractHttpClient client]  ; To get to cookies.
+    (http/post *mql-login*
+               :query {"username" user "password" pass}
+               :as :json
+               :cookie-store *cookie-store*)
+    (if (check? code content)
+      [content (.getCookieStore client)]
+      [false nil])))
+  
+(defn mql-logged-in?
+  "Return whether the user (identified by the current cookie store)
+  is logged in."
+  ([cookie-store]
+   (with-http-bindings
+     [code content]
+     (http/get *mql-logged-in* :as :json :cookie-store cookie-store)
+     (check? code content)))
+  ([]
+   (mql-logged-in? *cookie-store*)))
+
+(defmacro with-login [[user pass] & body]
+  `(let [[response# cookie-store#] (mql-login ~user ~pass)]
+     (if (and response#
+              (ok? response#))
+       ;; Great!
+       (binding [*cookie-store* cookie-store#]
+         ~@body)
+       (throw (new Exception "Login failure.")))))
+
+  
 (defn mql-read 
   "Send a MQL query to Freebase. Optionally provide a dictionary of 
   arguments suitable to http/get, and a boolean for debug output.
@@ -62,51 +197,57 @@
   the output is as if this function had been mapped over the sequence of
   queries, but execution is more efficient."
   ([mql http-options debug?]
-   (let [many? (sequential? mql)
-         names (when many?
-                 (take (count mql) query-names))
-         q (if many?
-             {"queries"
-              (json/encode-to-str
-                (zipmap names
-                        (map (comp envelope vector) mql)))}
-             {"query"
-              (json/encode-to-str
-                (envelope [mql]))})]
-     
-     (debug-print debug? q "Query parameters:")
-     (let [[code response body]
-           (http/get *mql-read*
-                     :headers (:headers http-options)
-                     :parameters (:parameters http-options)
-                     :query q 
-                     :as :json)]
+   (let [[q many? names] (mql->query mql)]
+     (with-http-bindings-exception
+       [code content]
+       (http/get *mql-read*
+                 :headers (:headers http-options)
+                 :parameters (:parameters http-options)
+                 :query q 
+                 :as :json
+                 :cookie-store *cookie-store*)
 
-       (debug-print debug? body "Got response" code response)
-       (if (and (>= code 200)
-                (< code 300))
-         
          (if many?
-           (process-multiple-query-results body names)
-           (process-query-result body))
-
-         (throw (new Exception
-                     (str "Bad response: " code " " response)))))))
+           (process-multiple-query-results content names)
+           (process-query-result content)))))
   
   ([mql http-options]
    (mql-read mql http-options false))
   
   ([mql]
    (mql-read mql {} false)))
+
+(defn mql-write 
+  "Send a MQL write request to Freebase. Requires authentication."
+  ([mql http-options]
+   (let [[q many? names] (mql->query mql)]
+     (with-http-bindings-exception
+       [code content]
+       ;; TODO: When the response arrives, parse the Set-Cookie header to
+       ;; extract the mwLastWriteTime cookie and save it for use with
+       ;; subsequent read requests. Should work fine with the cookie store...
+       (http/post *mql-write*
+                  :headers (assoc (:headers http-options) "X-Metaweb-Request" "x")
+                  :parameters (:parameters http-options)
+                  :query q 
+                  :as :json
+                  :cookie-store *cookie-store*)
+
+       (if many?
+         (process-multiple-query-results content names)
+         (process-query-result content)))))
+  
+  ([mql]
+   (mql-write mql {})))
   
 (defn mql-version
   "Returns a map. Useful keys are :graph (graphd version), :me, :cdb, :relevance."
   []
-  (content (http/get *mql-version* :as :json)))
+  (:content (http/get *mql-version* :as :json)))
 
 (defn mql-status
   []
-  (content (http/get *mql-status* :as :json)))
+  (:content (http/get *mql-status* :as :json)))
 
 (defn only-matching
   "Filter MQL reconciliation API results to only include matching results."
@@ -119,27 +260,24 @@
                 start
                 jsonp
                 http-options]} (apply hash-map args)
-        
+
         query (non-nil-values
                 {"q" (json/encode-to-str query)
                  "limit" limit
                  "start" start
                  "jsonp" jsonp})]
-    
-    (let [[code response body]
-          (http/get *mql-reconcile*
-                    :headers (:headers http-options)
-                    :parameters (:parameters http-options)
-                    :query query
-                    :as :json)]
 
-      (if (and (>= code 200)
-               (< code 300))
+    (with-http-bindings-exception
+      [code content]
+      (http/get *mql-reconcile*
+                :headers (:headers http-options)
+                :parameters (:parameters http-options)
+                :query query
+                :as :json
+                :cookie-store *cookie-store*)
 
-        body
-        (throw (new Exception
-                    (str "Bad response: " code " " response)))))))
-  
+      content)))
+
 (defn mql-search
   "Perform a MQL search operation.
   Arguments are query (a string), then any of the following keys:
@@ -178,23 +316,20 @@
                  "domain_strict" domain-strict
                  "escape" escape})]
     
-    (let [[code response body]
-          (http/get *mql-search*
-                    :headers (:headers http-options)
-                    :parameters (:parameters http-options)
-                    :query query
-                    :as :json)]
+    (with-http-bindings-exception
+      [code content]
+      (http/get *mql-search*
+                :headers (:headers http-options)
+                :parameters (:parameters http-options)
+                :query query
+                :as :json
+                :cookie-store *cookie-store*)
 
-      (if (and (>= code 200)
-               (< code 300))
-
-        (if (or (nil? format)
-                (= format :json)
-                (= format "json"))
-          (process-query-result body)
-          body)
-        (throw (new Exception
-                    (str "Bad response: " code " " response)))))))
+      (if (or (nil? format)
+              (= format :json)
+              (= format "json"))
+        (process-query-result content)
+        content))))
 
 (comment
   (doseq [m (mql/mql-search "Los Gatos")]
@@ -236,5 +371,10 @@
             "/film/film/release_date_s" "1981"
         })))
   
-  
+(with-sandbox
+  (with-login ["user" "pass"]
+    (mql-write {"create" "unless_exists"
+                "id" nil
+                "name" "Test topic, please ignore"
+                "type" ["/common/topic"]})))
   )
