@@ -35,7 +35,7 @@ writing, and assorted status operations.
 
 Examples:
 
-(use-package 'com.twinql.clojure.mql)
+(use 'com.twinql.clojure.mql)
 
 (with-sandbox                    ; Use Sandbox API locations.
   (with-login ["user" "pass"]    ; Make a login request and keep the cookie.
