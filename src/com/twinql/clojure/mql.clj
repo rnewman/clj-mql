@@ -1,4 +1,5 @@
 (ns com.twinql.clojure.mql
+  (:refer-clojure)
   (:import 
      (java.lang Exception)
      (java.net URI)
