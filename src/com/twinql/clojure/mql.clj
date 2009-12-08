@@ -68,9 +68,12 @@
 ;;; Utility functions for request and response manipulation.
 ;;; 
 
-(defn- envelope [q]
-  {"query" q
-   "escape" false})
+(defn- envelope
+  ([p q]
+     (merge (envelope q) p))
+  ([q]
+     {"query" q
+      "escape" false}))
 
 (defn ok? [res]
   (= "/api/status/ok" (:code res)))
@@ -112,24 +115,51 @@
 (def query-names
   (map (fn [i] (str "q" i)) (iterate inc 1)))
 
+(defn- assoc!-when
+  "Like assoc!, but skips keys with null values."
+  ([m k v]
+    (if (nil? v)
+      m
+      (assoc! m k v)))
+  ([m k v & kvs]
+     (if k
+       (apply assoc!-when
+              (assoc!-when m k v)
+              kvs)
+       m)))
+
+(defn- envelope-parameters [p]
+  (let [{:keys [cursor escape lang as-of-time uniqueness-failure]} p
+        o (transient {})]
+    (persistent!
+     (assoc!-when o
+                  "cursor" cursor
+                  "escape" escape
+                  "lang" lang
+                  "as_of_time" as-of-time
+                  "uniqueness_failure" uniqueness-failure))))
+
 (defn- mql->query
   "Read and write allow for one or many queries as input. This function
   takes an arbitrary collection parameter and returns a map (with JSON-encoded
   values), whether it represents many or one, and a sequence of names."
-  [mql]
-  (let [many? (sequential? mql)
-        names (when many?
-                (take (count mql) query-names))]
-    [(if many?
-             {"queries"
-              (json/encode-to-str
-                (zipmap names
-                        (map (comp envelope vector) mql)))}
-             {"query"
-              (json/encode-to-str
-                (envelope [mql]))})
-     many?
-     names]))
+  ([mql params]
+     (let [p (envelope-parameters params)
+           many? (sequential? mql)
+           names (when many?
+                   (take (count mql) query-names))]
+       [(if many?
+          {"queries"
+           (json/encode-to-str
+            (zipmap names
+                    (map (comp (partial envelope p) vector) mql)))}
+          {"query"
+           (json/encode-to-str
+            (envelope p [mql]))})
+        many?
+        names]))
+  ([mql]
+     (mql->query mql nil)))
 
 ;;; 
 ;;; HTTP.
@@ -140,7 +170,7 @@
   [keys http-form & forms]
   `(let [{:keys ~keys} ~http-form]
      ~@forms))
-  
+
 (defmacro with-http-bindings-exception
   "Binds the keys from the result of the HTTP request, executing forms.
   If the code is not success, throw an exception."
@@ -197,8 +227,10 @@
   If a sequence of queries is provided, they are batched and run together;
   the output is as if this function had been mapped over the sequence of
   queries, but execution is more efficient."
-  ([mql http-options debug?]
-   (let [[q many? names] (mql->query mql)]
+  ([mql http-options & args]
+     
+     (let [{:keys [debug? envelope-parameters]} (apply array-map args)
+           [q many? names] (mql->query mql envelope-parameters)]
      (with-http-bindings-exception
        [code content]
        (http/get *mql-read*
@@ -212,11 +244,8 @@
            (process-multiple-query-results content names)
            (process-query-result content)))))
   
-  ([mql http-options]
-   (mql-read mql http-options false))
-  
   ([mql]
-   (mql-read mql {} false)))
+   (mql-read mql {})))
 
 (defn mql-write 
   "Send a MQL write request to Freebase. Requires authentication."
