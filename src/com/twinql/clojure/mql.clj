@@ -7,8 +7,8 @@
      (org.apache.http.client CookieStore)
      (org.apache.http.impl.client AbstractHttpClient))
   (:require 
-     [com.twinql.clojure.http :as http]
-     [org.danlarkin.json :as json]))
+   [com.twinql.clojure.http :as http]
+   [org.danlarkin.json :as json]))
 
 ;;;
 ;;; API URIs.
@@ -86,9 +86,15 @@
        (ok? content)))
 
 (defn- error->exception [res]
-  (throw (new Exception
-              (str "Non-OK status from MQL query: "
-                   (:code res) " -- " (seq (map :message (:messages res)))))))
+  (if res
+    (throw (Exception.
+            (str "Non-OK status from MQL query: code ["
+                 (:code res)
+                 "] -- messages ["
+                 (seq (map :message (:messages res)))
+                 "]")))
+    (throw (Exception.
+            (str "Empty response from MQL query.")))))
 
 ;; Extract the result from the body if the request was successful.
 ;; Otherwise, throw an exception.
