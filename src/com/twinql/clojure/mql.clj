@@ -115,7 +115,7 @@
 (def query-names
   (map (fn [i] (str "q" i)) (iterate inc 1)))
 
-(defn- assoc!-when
+(defn assoc!-when
   "Like assoc!, but skips keys with null values."
   ([m k v]
     (if (nil? v)
