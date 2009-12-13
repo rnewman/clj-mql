@@ -129,15 +129,15 @@
        m)))
 
 (defn- envelope-parameters [p]
-  (let [{:keys [cursor escape lang as-of-time uniqueness-failure]} p
-        o (transient {})]
-    (persistent!
-     (assoc!-when o
-                  "cursor" cursor
-                  "escape" escape
-                  "lang" lang
-                  "as_of_time" as-of-time
-                  "uniqueness_failure" uniqueness-failure))))
+  (when p
+    (let [{:keys [cursor escape lang as-of-time uniqueness-failure]} p]
+      (persistent!
+       (assoc!-when (transient {})
+                    "cursor" cursor
+                    "escape" escape
+                    "lang" lang
+                    "as_of_time" as-of-time
+                    "uniqueness_failure" uniqueness-failure)))))
 
 (defn- mql->query
   "Read and write allow for one or many queries as input. This function
