@@ -64,6 +64,19 @@
   [m]
   (into {} (filter (fn [[k v]] ((complement nil?) v)) m)))
 
+(defn alter-map-by
+  "Returns m with each value transformed by f."
+  [m f]
+  (let [ks (keys m)]
+    (loop [o (transient m)
+           k (first ks)
+           ks (rest ks)]
+      (if-not k
+        (persistent! o)        
+        (recur (assoc! o k (f (get o k)))
+               (first ks)
+               (rest ks))))))
+
 ;;;
 ;;; Utility functions for request and response manipulation.
 ;;; 
@@ -96,15 +109,32 @@
     (throw (Exception.
             (str "Empty response from MQL query.")))))
 
+(declare %mql-read)
+
 ;; Extract the result from the body if the request was successful.
 ;; Otherwise, throw an exception.
-(defn- process-query-result [res]
-  (when res
-    (if (ok? res)
-      (:result res)
-      (error->exception res))))
+;; If a cursor identifier was returned, produce a lazy sequence
+;; to fetch the next batch.
+(defn- process-query-result
+  ([res q args]
+     (when res
+       (if (ok? res)
+         (let [cursor (:cursor res)]
+           (if (string? cursor)
+             (lazy-seq
+              (concat
+               (:result res)
+               (apply %mql-read
+                      (assoc-in q ["query" "cursor"] cursor)
+                      args)))
+             ;; No? This must be the last one, or no cursor was requested.
+             (:result res)))
+         (error->exception res))))
+  ([res]
+     (process-query-result res nil nil)))
 
 ;; Handle a collection of results, as returned by a 'queries' request.
+;; TODO: support cursors here. No so easy, though.
 (defn- process-multiple-query-results [res names]
   (when res
     (if (ok? res)
@@ -145,10 +175,13 @@
                     "as_of_time" as-of-time
                     "uniqueness_failure" uniqueness-failure)))))
 
+
+
 (defn- mql->query
   "Read and write allow for one or many queries as input. This function
-  takes an arbitrary collection parameter and returns a map (with JSON-encoded
-  values), whether it represents many or one, and a sequence of names."
+  takes an arbitrary collection parameter and returns a map (whose
+  values you should JSON-encode), whether it represents many or one, and
+  a sequence of names."
   ([mql params]
      (let [p (envelope-parameters params)
            many? (sequential? mql)
@@ -156,12 +189,10 @@
                    (take (count mql) query-names))]
        [(if many?
           {"queries"
-           (json/encode-to-str
-            (zipmap names
-                    (map (comp (partial envelope p) vector) mql)))}
+           (zipmap names
+                   (map (comp (partial envelope p) vector) mql))}
           {"query"
-           (json/encode-to-str
-            (envelope p [mql]))})
+           (envelope p [mql])})
         many?
         names]))
   ([mql]
@@ -226,6 +257,23 @@
          ~@body)
        (throw (new Exception "Login failure.")))))
 
+(defn %mql-read [q many? names headers parameters cookie-store]
+  (with-http-bindings-exception
+    [code content]
+    ;; Have to do this every time so we can rewrite the
+    ;; cursor part.
+    (let [query (alter-map-by q json/encode-to-str)]
+      (http/get *mql-read*
+                :headers headers
+                :parameters parameters
+                :query query
+                :as :json
+                :cookie-store cookie-store))
+
+    (if many?
+      (process-multiple-query-results content names)
+      (process-query-result content q
+                            [many? names headers parameters cookie-store]))))
   
 (defn mql-read 
   "Send a MQL query to Freebase. Optionally provide a dictionary of 
@@ -233,23 +281,19 @@
   If a sequence of queries is provided, they are batched and run together;
   the output is as if this function had been mapped over the sequence of
   queries, but execution is more efficient."
-  ([mql http-options & args]
-     
-     (let [{:keys [debug? envelope-parameters]} (apply array-map args)
-           [q many? names] (mql->query mql envelope-parameters)]
-     (with-http-bindings-exception
-       [code content]
-       (http/get *mql-read*
-                 :headers (:headers http-options)
-                 :parameters (:parameters http-options)
-                 :query q 
-                 :as :json
-                 :cookie-store *cookie-store*)
+  ([mql & args]
 
-         (if many?
-           (process-multiple-query-results content names)
-           (process-query-result content)))))
-  
+     ;; Destructure a bunch of stuff, then jump off to a function that
+     ;; can indirectly recurse with an updated cursor parameter from
+     ;; fetched results.
+     (let [{:keys [http-options debug? envelope-parameters]}
+           (apply array-map args)
+           [q many? names] (mql->query mql envelope-parameters)]
+       (%mql-read q many? names
+                  (:headers http-options)
+                  (:parameters http-options)
+                  *cookie-store*)))
+    
   ([mql]
    (mql-read mql {})))
 
