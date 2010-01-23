@@ -52,7 +52,8 @@
 
 ;;; It's very convenient to always receive bodies as parsed JSON.
 
-(defmethod http/entity-as :json [entity as]
+(defmethod http/entity-as :json
+  [entity as & args]
   (json/decode-from-reader (http/entity-as entity :reader)))
 
 ;;;
