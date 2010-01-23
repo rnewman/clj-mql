@@ -99,16 +99,24 @@
             (< code 300))
        (ok? content)))
 
-(defn- error->exception [res]
-  (if res
-    (throw (Exception.
-            (str "Non-OK status from MQL query: code ["
-                 (:code res)
-                 "] -- messages ["
-                 (seq (map :message (:messages res)))
-                 "]")))
-    (throw (Exception.
-            (str "Empty response from MQL query.")))))
+(defn- error->exception
+  ([res]
+     (error->exception res nil))
+  ([res q]
+     (if res
+       (throw (Exception.
+               (str "Non-OK status from MQL query: code ["
+                    (:code res)
+                    "] -- response [" (prn-str res)
+                    
+                    ;(seq (map :message (:messages res)))
+                    "]"
+                    (if q
+                      (str ". Query was " (pr-str q)
+                           ".")
+                      ""))))
+       (throw (Exception.
+               (str "Empty response from MQL query."))))))
 
 (declare %mql-read)
 
@@ -130,7 +138,7 @@
                       args)))
              ;; No? This must be the last one, or no cursor was requested.
              (:result res)))
-         (error->exception res))))
+         (error->exception res q))))
   ([res]
      (process-query-result res nil nil)))
 
