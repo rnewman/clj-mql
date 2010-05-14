@@ -7,8 +7,8 @@
      (org.apache.http.client CookieStore)
      (org.apache.http.impl.client AbstractHttpClient))
   (:require 
-   [com.twinql.clojure.http :as http]
-   [org.danlarkin.json :as json]))
+     [clojure.contrib.json :as json]
+     [com.twinql.clojure.http :as http]))
 
 ;;;
 ;;; API URIs.
@@ -49,12 +49,6 @@
 
 ;;; This is bound by with-login.
 (def *cookie-store* nil)
-
-;;; It's very convenient to always receive bodies as parsed JSON.
-
-(defmethod http/entity-as :json
-  [entity as status]
-  (json/decode-from-reader (http/entity-as entity :reader status)))
 
 ;;;
 ;;; Generic utilities.
@@ -271,7 +265,7 @@
     [code content]
     ;; Have to do this every time so we can rewrite the
     ;; cursor part.
-    (let [query (alter-map-by q json/encode-to-str)]
+    (let [query (alter-map-by q json/json-str)]
       (http/get *mql-read*
                 :headers headers
                 :parameters parameters
@@ -351,7 +345,7 @@
                 http-options]} (apply hash-map args)
 
         query (non-nil-values
-                {"q" (json/encode-to-str query)
+                {"q" (json/json-str query)
                  "limit" limit
                  "start" start
                  "jsonp" jsonp})]
